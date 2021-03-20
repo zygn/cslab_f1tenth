@@ -1,3 +1,3 @@
-# cslab_repo
+# cslab_f1tenth
 
 **UNDER CONSTRUCTION**
