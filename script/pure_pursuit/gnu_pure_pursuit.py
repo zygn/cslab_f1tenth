@@ -5,44 +5,44 @@ import math
 import numpy as np
 import copy
 import tf.transformations as transform
+import pprint
+import time
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker
 
 class Pure_Pursuit:
+
     def __init__(self):
-        self.sub = rospy.Subscriber('/odom', Odometry, self.Odome, queue_size = 1)
-        self.drive_pub = rospy.Publisher("/drive", AckermannDriveStamped, queue_size = 10 )
+        self.VESC_SUB_TOPIC = '/vesc/odom'
+        self.DRIVE_PUB_TOPUC = '/vesc/high_level/ackermann_cmd_mux/input/nav_1'
+        self.WPS_FILE_LOCATION = '/home/nvidia/map_temp/wps/wp-2021-03-21-07-35-49.csv'
+
+        self.sub = rospy.Subscriber(self.VESC_SUB_TOPIC, Odometry, self.Odome, queue_size = 1)
+        self.drive_pub = rospy.Publisher(self.DRIVE_PUB_TOPIC, AckermannDriveStamped, queue_size = 10 )
         # self.pub_dp_mark = rospy.Publisher("/marker", Marker, queue_size = 1)
         self.ackermann_data = AckermannDriveStamped()
 
-        # self.ackermann_data.drive.steering_angle = 0
         self.ackermann_data.drive.steering_angle = 0
 
         self.PI = 3.141592
-        self.CURRENT_WP_CHECK_OFFSET = 2
+        self.CURRENT_WP_CHECK_OFFSET = 2.0
         self.DX_GAIN = 2.5
         self.RACECAR_LENGTH = 0.325
         self.GRAVITY_ACCELERATION = 9.81
 
-        #self.LOOKAHEAD_MAX = rospy.get_param("/pure_pursuit/driving/max_look_ahead")
-        self.LOOKAHEAD_MAX = rospy.get_param('max_look_ahead', 1.9)
-        #self.LOOKAHEAD_MIN = rospy.get_param("/pure_pursuit/driving/min_look_ahead")
-        self.LOOKAHEAD_MIN = rospy.get_param('min_look_ahead', 0.9)
-        #self.SPEED_MAX = rospy.get_param("/pure_pursuit/driving/max_speed")
+        self.wa = 0
+        self.LOOKAHEAD_MAX = rospy.get_param('max_look_ahead', 0.7)
+        self.LOOKAHEAD_MIN = rospy.get_param('min_look_ahead', 0.3)
         self.SPEED_MAX = rospy.get_param('max_speed', 6.0)
-        #self.SPEED_MIN = rospy.get_param("/pure_pursuit/driving/min_speed")
         self.SPEED_MIN = rospy.get_param('min_speed', 1.5)
-        #self.DP_ANGLE_PROPORTION = rospy.get_param("/pure_pursuit/tuning/DP_angle_proportion")
-        #self.MSC_MUXSIZE = rospy.get_param("/pure_pursuit/driving/manual_speed_control/mux_size")
         self.MSC_MUXSIZE = rospy.get_param('mux_size', 0)
-        #self.MU = rospy.get_param("/pure_pursuit/driving/mu")
         self.MU = rospy.get_param('mu', 1)
-        #self.RATE = rospy.get_param("/pure_pursuit/driving/rate")
         self.RATE = rospy.get_param('rate', 100)
 
         self.waypoints = self.get_waypoint()
+        self.wp_len = len(self.waypoints)
         self.wp_index_current = 0
         self.current_position = [0,0,0]
         self.lookahead_desired = 0
@@ -79,7 +79,11 @@ class Pure_Pursuit:
         
     
     def get_waypoint(self):
-        file_wps = np.genfromtxt('/home/ryul/f1tenth_ws/src/pure_pursuit/wps/wp_berlin_1.csv',delimiter=',',dtype='float')
+        try:
+            file_wps = np.genfromtxt(self.WPS_FILE_LOCATION ,delimiter=',',dtype='float')
+        except:
+            print("can't read waypoint file.")
+
         temp_waypoint = []
         for i in file_wps:
             wps_point = [i[0],i[1],i[2]]
@@ -88,15 +92,15 @@ class Pure_Pursuit:
         return temp_waypoint
 
         
-    def get_manualspeed(self):
-        for i in range(self.MSC_MUXSIZE):
-            region = "/region_"+str(i)
-            starting_wp = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/starting_wp")
-            ending_wp = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/ending_wp")
-            max_speed = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/max_speed")
-            min_speed = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/min_speed")
+    # def get_manualspeed(self):
+    #     for i in range(self.MSC_MUXSIZE):
+    #         region = "/region_"+str(i)
+    #         starting_wp = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/starting_wp")
+    #         ending_wp = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/ending_wp")
+    #         max_speed = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/max_speed")
+    #         min_speed = rospy.get_param("/pure_pursuit/driving/manual_speed_control"+region+"/min_speed")
 
-            self.manualSpeedArray.append([starting_wp, ending_wp, max_speed, min_speed])
+    #         self.manualSpeedArray.append([starting_wp, ending_wp, max_speed, min_speed])
             
     def Odome(self, odom_msg):
         qx = odom_msg.pose.pose.orientation.x
@@ -116,6 +120,11 @@ class Pure_Pursuit:
     def find_nearest_wp(self):
         wp_index_temp = self.wp_index_current
         self.nearest_distance = self.getDistance(self.waypoints[wp_index_temp], self.current_position)
+
+        if self.wa != self.waypoints[self.wp_index_current]:
+            
+            print(self.waypoints[self.wp_index_current])
+            self.wa = self.waypoints[self.wp_index_current]
 
         while True:
             wp_index_temp+=1
@@ -147,8 +156,9 @@ class Pure_Pursuit:
         self.lookahead_desired = np.exp(-(self.DX_GAIN*np.fabs(self.dx) - np.log(self.LOOKAHEAD_MAX - self.LOOKAHEAD_MIN))) + self.LOOKAHEAD_MIN
 
     def find_lookahead_wp(self, length):
+        
         wp_index_temp = self.wp_index_current
-        while(1):
+        while True:
             if(wp_index_temp >= len(self.waypoints)-1): wp_index_temp = 0
             distance = self.getDistance(self.waypoints[wp_index_temp], self.current_position)
 
@@ -157,17 +167,30 @@ class Pure_Pursuit:
         return self.waypoints[wp_index_temp]
     
     def find_desired_wp(self):
+
         wp_index_temp = self.wp_index_current
-        while(1):
-            if(wp_index_temp >= len(self.waypoints)-1): wp_index_temp = 0
+
+        while True:
+            if(wp_index_temp >= len(self.waypoints)-1):
+                wp_index_temp = 0
+
             distance = self.getDistance(self.waypoints[wp_index_temp], self.current_position)
+            
             if distance >= self.lookahead_desired:
-                if wp_index_temp-2 >=0 and wp_index_temp+2 < len(self.waypoints)-1:
+                
+                if (wp_index_temp-2 >=0) and (wp_index_temp+2 < len(self.waypoints)-1):
                     self.waypoints[wp_index_temp][2] = np.arctan((self.waypoints[wp_index_temp+2][1]-self.waypoints[wp_index_temp-2][1])/self.waypoints[wp_index_temp+2][0]-self.waypoints[wp_index_temp-2][0])
+                
                 self.desired_point = self.waypoints[wp_index_temp]
                 self.actual_lookahead = distance
+                
                 break
+            
             wp_index_temp += 1
+        
+        if int(self.wp_len * (2/3)) < wp_index_temp :
+            print("over",self.desired_point)
+
     
     def find_path(self):
         #right cornering
@@ -177,15 +200,17 @@ class Pure_Pursuit:
             self.steering_direction = -1
 
         #left cornering
-        else:
+        elif self.transformed_desired_point[0] < 0:
             self.goal_path_radius = pow(self.actual_lookahead, 2)/((-2)*self.transformed_desired_point[0])
             self.goal_path_theta = np.arcsin(self.transformed_desired_point[1]/self.goal_path_radius)
             self.steering_direction = 1
 
+        else:
+            print("raised else option. %s - %s" % self.transformed_desired_point, time.time())
+
     def setSteeringAngle(self):
         steering_angle = np.arctan2(self.RACECAR_LENGTH,self.goal_path_radius)
-        
-        self.ackermann_data.drive.steering_angle = self.steering_direction * steering_angle
+        self.ackermann_data.drive.steering_angle = self.steering_direction * steering_angle - 0.006
 
     # def tuneSteeringAngle(self):
     #     if (self.nearest_distance > 0 and self.transformed_desired_point[2] < (self.PI/2) ) or ( self.nearest_distance < 0 and self.transformed_desired_point[2] > (self.PI/2) ):
@@ -212,7 +237,7 @@ class Pure_Pursuit:
         if test_speed > 6:
             self.setSpeed()
         else:
-            self.ackermann_data.drive.speed = test_speed
+            self.ackermann_data.drive.speed = 1 #test_speed
 
 
     def driving(self):
@@ -234,7 +259,7 @@ class Pure_Pursuit:
             self.setSteeringAngle()
             self.setSpeed_PossibleMaximumTest()
             self.drive_pub.publish(self.ackermann_data)
-
+            print("")
             rate.sleep()
 
 if __name__ == '__main__':
